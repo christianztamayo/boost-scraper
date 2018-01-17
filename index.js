@@ -1,157 +1,102 @@
 #!/usr/bin/env node
 
-'use strict';
-
-const
-  { execSync }  = require('child_process'),
-  chalk         = require('chalk'),
-  clear         = require('clear'),
-  growlPkg      = require('growl'),
-  axios         = require('axios'),
-  cheerio       = require('cheerio'),
-  ora           = require('ora')
-;
+const { execSync } = require('child_process');
+const chalk = require('chalk');
+const clear = require('clear');
+const _ = require('lodash');
+const growlPkg = require('growl');
+const axios = require('axios');
+const cheerio = require('cheerio');
+const ora = require('ora');
 
 const config = {
   beepCount: 5,
   beepSound: '/System/Library/Sounds/Glass.aiff',
-  delay: 10,
-  domains: {
-    size: {
-      sources: [
-        {
-          title: 'NMD US 8.5 chi',
-          url: 'https://www.size.co.uk/mens/size/8/sale/?facet-size-collection=adidas-originals-nmd&AJAX=1'
-        },
-        {
-          title: 'NMD US 9 chi',
-          url: 'https://www.size.co.uk/mens/size/8-5/sale/?facet-size-collection=adidas-originals-nmd&AJAX=1'
-        },
-        {
-          title: 'Boost US 9 chi',
-          url: 'https://www.size.co.uk/search/boost/size/8-5/sale/?AJAX=1'
-        },
-        {
-          title: 'Aiah wonder pink',
-          url: 'https://www.size.co.uk/products/search/?sku=280981&AJAX=1'
-        }
-      ],
-      skip: ['263434']
-    },
-    jdsports: {
-      sources: [
-        {
-          title: 'NMD US 8.5 chi',
-          url: 'https://www.jdsports.co.uk/men/size/8/sale/?q=nmd&AJAX=1'
-        },
-        {
-          title: 'NMD US 9 chi',
-          url: 'https://www.jdsports.co.uk/men/size/8-5/sale/?q=nmd&AJAX=1'
-        },
-        {
-          title: 'Boost US 9 chi',
-          url: 'https://www.jdsports.co.uk/search/boost/size/8-5/sale/?AJAX=1'
-        },
-        {
-          title: 'Aiah wonder pink',
-          url: 'https://www.jdsports.co.uk/products/search/?sku=280981&AJAX=1'
-        }
-      ],
-      skip: ['240757', '244265', '262110', '262122']
-    }
-  }
+  delay: 30,
 };
 
-// `https://i1.adis.ws/t/jpl/sz_product_list?plu=sz_${sku}_a&qlt=80&w=300&h=337&v=1`
-
-/*
+/**
  * Utils
  */
+
 const beep = () => execSync(`afplay ${config.beepSound}`);
 
-const growl = (message) => growlPkg(message, {title: 'Boost Scraper'});
+const growl = message => growlPkg(message, { title: 'Boost Scraper' });
 
-// const die = () => process.exit(0);
-
-// const sleep = (seconds) =>
-//   new Promise((resolve) =>
-//     setTimeout(resolve, (seconds * 1000))
-//   );
-
-/*
+/**
  * Main
  */
+
+const target = [
+  'https://www.size.co.uk/search/eqt+93+17/sale/size/9/',
+  'https://www.size.co.uk/search/iniki/size/7/sale/',
+  'https://www.size.co.uk/search/nmd+city+sock/colour/green/sale/size/5/',
+];
+
+let products = {};
+let spinner;
+let firstRun = true;
+let spinnerRunning = false;
+
 clear();
 
-
-let products = { size: [], jdsports: [] },
-    newProducts = null,
-    promises = null,
-    spinner = null;
-
 const run = () => {
-  newProducts = { size: [], jdsports: [] };
-  promises = [];
+  const promises = target.map(url =>
+    axios({
+      url,
+      validateStatus: status =>
+        (status >= 200 && status < 300) ||
+        (status >= 400 && status < 500),
+    }));
 
-  Object.keys(config.domains).forEach((domain) => {
-    config.domains[domain].sources
-      .forEach((source) => {
-        let promise = new Promise((resolve) => {
-          axios.get(source.url)
-            .then((response) => {
-              let $ = cheerio.load(response.data);
+  axios.all(promises)
+    .then(response => response.filter(res => res.status === 200))
+    .then((responseArr) => {
+      const newProducts = {};
 
-              $('#productListMain [data-productsku]').each((k, v) => {
-                let sku = $(v).attr('data-productsku');
+      responseArr.forEach((response) => {
+        const $ = cheerio.load(response.data);
+        const urlProducts = [];
 
-                if (
-                  // wonder pink
-                  (sku === '280981' && !$(v).hasClass('itemSale')) ||
-                  config.domains[domain].skip.includes(sku)
-                  ) {
-                  return true;
-                }
+        $('#productListMain [data-productsku]').each((k, v) => {
+          const sku = $(v).attr('data-productsku');
 
-                if (!products[domain].includes(sku)) {
-                  newProducts[domain].push(sku);
-                }
-              });
-            })
-            .then(() => resolve())
-            .catch(() => resolve());
+          urlProducts.push(sku);
         });
 
-        promises.push(promise)
+        newProducts[response.config.url] = urlProducts;
       });
-  });
 
-  Promise.all(promises)
-    .then(() => {
-      let hasChanges = false;
+      if (!_.isEqual(products, newProducts)) {
+        if (!firstRun) {
+          spinner.succeed();
+          spinnerRunning = false;
 
-      Object.keys(config.domains).forEach((domain) => {
-        if (newProducts[domain].length) {
-          hasChanges = true;
-
-          if (spinner) {
-            spinner.succeed();
-          }
-
-          growl(`New items on ${domain}`);
-          console.info(chalk.green.bold(`${domain} 🔥  ${newProducts[domain].join()}`));
           beep();
-
-          products[domain] = [...new Set(products[domain].concat(newProducts[domain]))];
-          console.info(chalk.cyan(`https://www.${domain}.co.uk/products/search/?sku=${products[domain].join()}`));
+          growl('New products found');
         }
-      });
 
-      if(hasChanges) {
-        spinner = ora('Waiting...').start();
+        console.log(chalk.green.bold('New products found:'));
+        console.log(newProducts);
+        console.log();
+        console.log(chalk.red.bold('Diffs:'));
+        _.forOwn(newProducts, (value, key) => {
+          console.log(key, _.difference(products[key], value));
+        });
+        console.log();
+
+        products = newProducts;
       }
 
-      setTimeout(run, config.delay * 100)
-    });
-}
+      if (!spinnerRunning) {
+        spinner = ora('Waiting...').start();
+        spinnerRunning = true;
+      }
+
+      firstRun = false;
+      setTimeout(run, config.delay * 100);
+    })
+    .catch(() => run);
+};
 
 run();
